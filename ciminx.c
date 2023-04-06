@@ -17,8 +17,8 @@
 #define STD_IN 0
 
 int does_contain_error_msg(char *error_msg);
-int child_process();
-int parent_process(char *test);
+int child_process(char *test);
+int parent_process();
 int save_in_file(char *target, char *filename);
 int execute_target_program();
 char *reduce(char *t);
@@ -129,23 +129,23 @@ void handle_sigint(int sig)
     exit(0);
 }
 
-int child_process()
+int child_process(char *test)
 {
-    // close(pipe_fd[PIPE_WRITE]);
-    // close(pipe_err_fd[PIPE_ERR_READ]);
-    FILE *input_fp = fopen(input_file_path, "rb");
-    int input_fd = fileno(input_fp);
-
-    if (dup2(pipe_fd[PIPE_READ], STD_IN) == -1 || dup2(pipe_err_fd[PIPE_ERR_WRITE], STD_ERR) == -1)
+    ssize_t sent = write(pipe_fd[PIPE_WRITE], test, strlen(test));
+    close(pipe_fd[PIPE_WRITE]);
+    printf("wrote: data size: %ld\n", sent);
+    if (dup2(pipe_fd[PIPE_READ], STD_IN) == -1)
     {
-
         fprintf(stderr, "Error dup2: %s\n", strerror(errno));
     }
-
+    if (dup2(pipe_err_fd[PIPE_ERR_WRITE], STD_ERR) == -1)
+    {
+        fprintf(stderr, "Error err dup2: %s\n", strerror(errno));
+    }
     close(pipe_fd[PIPE_READ]);
-    close(pipe_err_fd[PIPE_ERR_WRITE]);
-
-    int flag = execute_target_program();
+    close(pipe_fd[PIPE_ERR_WRITE]);
+    printf("Launched Excel process with PID: %d\n", child_pid );
+    int flag = execl(program_args[0], program_args[0], (char *)0x0);
     if (flag == -1)
     {
         fprintf(stderr, "Error executing program: %s\n", strerror(errno));
@@ -153,13 +153,8 @@ int child_process()
     }
 }
 int timeout = 3;
-int parent_process(char *test)
+int parent_process()
 {
-    // close(pipe_fd[PIPE_READ]);
-    // close(pipe_err_fd[PIPE_ERR_WRITE]);
-
-    printf("Launched Excel process with PID\n");
-
     // Set up the select call to monitor the pipe for readability
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -178,7 +173,6 @@ int parent_process(char *test)
     else if (result == 0)
     {
         printf("Timeout waiting for data on the pipe. Sending SIGKILL to Excel process...\n");
-
         // Forcefully terminate the Excel process with SIGKILL
         if (kill(child_pid, SIGKILL) == 0)
         {
@@ -192,28 +186,25 @@ int parent_process(char *test)
     }
     else
     {
-        write(pipe_fd[PIPE_WRITE], test, strlen(test));
-        close(pipe_fd[PIPE_WRITE]);
-
         char buffer[BUFFER_SIZE];
 
         // read from pipe until error string is found or end of file
         int bytes_read;
         while ((bytes_read = read(pipe_err_fd[PIPE_ERR_READ], buffer, BUFFER_SIZE - 1)) > 0)
         {
+            buffer[bytes_read+1] = 0x0;
             if (does_contain_error_msg(buffer))
             {
                 printf("error msg found. kill child proc");
                 kill(child_pid, SIGINT);
+                close(pipe_err_fd[PIPE_ERR_READ]);
                 return 0;
             }
         }
         fprintf(stderr, "Error string not found in output\n");
     }
-    // close(pipe_err_fd[PIPE_ERR_READ]);
-
+    close(pipe_err_fd[PIPE_ERR_READ]);
     // error string not found
-
     return -1;
 }
 int c = 0;
@@ -234,37 +225,32 @@ char *reduce(char *t)
             strcpy(test, head);
             strcat(test, tail);
 
-            printf("\ntest input: %s\n", test);
-
             child_pid = fork();
             if (child_pid == 0)
             { // child process
-                child_process();
+                child_process(test);
             }
             else
             { // parent process
-                if (parent_process(test) == 0)
+                if (parent_process() == 0)
                 {
                     printf("1\n");
                     char *reduced = reduce(test);
-                    free(test);
-                    free(head);
-                    free(tail);
+                    // free(test);
+                    // free(head);
+                    // free(tail);
                     return reduced;
                 }
             }
 
-            free(test);
-            free(head);
-            free(tail);
+            // free(test);
+            // free(head);
+            // free(tail);
         }
 
         for (int i = 0; i < strlen(tm) - s; i++)
         {
             char *mid = strndup(&tm[i], s);
-
-                        printf("\ntest input: %s\n", mid);
-
 
             child_pid = fork();
             if (child_pid == 0)
@@ -273,16 +259,16 @@ char *reduce(char *t)
             }
             else
             { // parent process
-                if (parent_process(mid) == 0)
+                if (parent_process() == 0)
                 {
                     printf("2\n");
                     char *reduced = reduce(mid);
-                    free(mid);
+                    // free(mid);
                     return reduced;
                 }
             }
 
-            free(mid);
+            // free(mid);
         }
         s--;
     }
@@ -346,7 +332,7 @@ int main(int argc, char *argv[])
 
     reduced_input = minimize(original_input);
 
-    printf(">>%s\n", reduced_input);
+    save_in_file(reduced_input, output_file_path);
     printf("Bye!\n");
     return 0;
 }
