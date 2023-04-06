@@ -177,6 +177,7 @@ int parent_process()
         if (kill(child_pid, SIGKILL) == 0)
         {
             printf("Sent SIGKILL to Excel process with PID \n");
+            return 1;
         }
         else
         {
