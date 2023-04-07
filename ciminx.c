@@ -287,6 +287,7 @@ int main(int argc, char *argv[])
     int opt;
     while ((opt = getopt(argc, argv, "i:m:o:")) != -1)
     {
+        if(input_file_path != NULL && error_string != NULL && output_file_path != NULL) break;
         switch (opt)
         {
         case 'i':
@@ -299,6 +300,7 @@ int main(int argc, char *argv[])
             output_file_path = optarg;
             break;
         default:
+            
             fprintf(stderr, "Usage: %s -i input_path -m error_string -o output_path\n", argv[0]);
             exit(EXIT_FAILURE);
         }
