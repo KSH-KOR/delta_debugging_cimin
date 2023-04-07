@@ -17,8 +17,8 @@
 #define STD_IN 0
 
 int does_contain_error_msg(char *error_msg);
-int child_process(char *test);
-int parent_process();
+int child_process();
+int parent_process(char *test);
 int save_in_file(char *target, char *filename);
 int execute_target_program();
 char *reduce(char *t);
@@ -56,13 +56,17 @@ int save_in_file(char *target, char *filename)
 }
 int execute_target_program()
 {
+    printf("Launce exec process with PID: %d. Target program :%s\n",child_pid, program_args[0]);
     int flag;
-    if (sizeof(program_args[0]) == sizeof(program_args))
+    if (program_args[1] == NULL)
     {
         flag = execl(program_args[0], program_args[0], (char *)0x0);
     }
     else
     {
+        for(int i=1; program_args[i] != NULL; i++){
+            printf("program %d args: %s\n", i, program_args[i]);
+        }
         flag = execv(program_args[0], &(program_args[1]));
     }
     return flag;
@@ -128,83 +132,79 @@ void handle_sigint(int sig)
     close(pipe_err_fd[1]);
     exit(0);
 }
-
-int child_process(char *test)
-{
-    ssize_t sent = write(pipe_fd[PIPE_WRITE], test, strlen(test));
-    close(pipe_fd[PIPE_WRITE]);
-    printf("wrote: data size: %ld\n", sent);
-    if (dup2(pipe_fd[PIPE_READ], STD_IN) == -1)
-    {
-        fprintf(stderr, "Error dup2: %s\n", strerror(errno));
+void close_read_end_pipe(int *which_pipe){
+    close(which_pipe[0]);
+}
+void close_write_end_pipe(int *which_pipe){
+    close(which_pipe[1]);
+}
+// note: it does not close the write end of pipe after the write.
+void write_to_pipe(char *to_write, int *which_pipe){
+    ssize_t to_sent = strlen(to_write);
+    char end = '\0';
+    ssize_t sent_so_far = 0;
+    printf("start wrting to fd: %d...\ndata size: %ld", which_pipe[1], to_sent);
+    while(sent_so_far < to_sent){
+        ssize_t sent;
+        if(sent = write(which_pipe[1], to_write, to_sent) == -1){
+            fprintf(stderr, "Write to pipe error: %s\n", strerror(errno));
+        }
+        printf("just wrote: %ld, wrote so far: %ld\n", sent, sent_so_far);
+        sent_so_far+=sent;
+        break;
     }
+    printf("done writing to fd: %d\nwrote: data size: %ld\n", which_pipe[1], sent_so_far);
+}
+// note: it does not close the read end of pipe after the read.
+void read_from_pipe(char *buffer, int *which_pipe){
+    int bytes_read;
+    while ((bytes_read = read(which_pipe[0], buffer, BUFFER_SIZE - 1)) > 0)
+    {
+        buffer[bytes_read+1] = 0x0;
+    }
+}
+
+int child_process()
+{
     if (dup2(pipe_err_fd[PIPE_ERR_WRITE], STD_ERR) == -1)
     {
         fprintf(stderr, "Error err dup2: %s\n", strerror(errno));
     }
-    close(pipe_fd[PIPE_READ]);
-    close(pipe_fd[PIPE_ERR_WRITE]);
-    printf("Launched Excel process with PID: %d\n", child_pid );
-    int flag = execl(program_args[0], program_args[0], (char *)0x0);
+    if (dup2(pipe_fd[PIPE_READ], STD_IN) == -1)
+    {
+        fprintf(stderr, "Error dup2: %s\n", strerror(errno));
+    }
+    close_write_end_pipe(pipe_err_fd);
+    close_read_end_pipe(pipe_fd);
+    //close(STDOUT_FILENO); // dont listen what the target program says through stdout fd
+    int flag = execute_target_program();
     if (flag == -1)
     {
         fprintf(stderr, "Error executing program: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 }
-int timeout = 3;
-int parent_process()
+
+int parent_process(char *test)
 {
-    // Set up the select call to monitor the pipe for readability
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(pipe_err_fd[PIPE_ERR_READ], &readfds);
+    close_read_end_pipe(pipe_fd);
+    close_write_end_pipe(pipe_err_fd);
 
-    struct timeval timeout_val;
-    timeout_val.tv_sec = timeout;
-    timeout_val.tv_usec = 0;
+    write_to_pipe(test, pipe_fd);
+    close_write_end_pipe(pipe_fd);
+    printf("done writing!\n");
+    
+    // read from pipe
+    char buffer[BUFFER_SIZE];
+    read_from_pipe(buffer, pipe_err_fd);
+    close_read_end_pipe(pipe_err_fd);
+    if(does_contain_error_msg(buffer)){
+        printf("error msg found. kill child proc");
+        kill(child_pid, SIGINT);
+        return 0;
+    }
 
-    int result = select(pipe_err_fd[PIPE_ERR_READ] + 1, &readfds, NULL, NULL, &timeout_val);
-    if (result == -1)
-    {
-        perror("Failed to wait for pipe");
-        exit(EXIT_FAILURE);
-    }
-    else if (result == 0)
-    {
-        printf("Timeout waiting for data on the pipe. Sending SIGKILL to Excel process...\n");
-        // Forcefully terminate the Excel process with SIGKILL
-        if (kill(child_pid, SIGKILL) == 0)
-        {
-            printf("Sent SIGKILL to Excel process with PID \n");
-            return 1;
-        }
-        else
-        {
-            perror("Failed to send SIGKILL");
-            exit(EXIT_FAILURE);
-        }
-    }
-    else
-    {
-        char buffer[BUFFER_SIZE];
-
-        // read from pipe until error string is found or end of file
-        int bytes_read;
-        while ((bytes_read = read(pipe_err_fd[PIPE_ERR_READ], buffer, BUFFER_SIZE - 1)) > 0)
-        {
-            buffer[bytes_read+1] = 0x0;
-            if (does_contain_error_msg(buffer))
-            {
-                printf("error msg found. kill child proc");
-                kill(child_pid, SIGINT);
-                close(pipe_err_fd[PIPE_ERR_READ]);
-                return 0;
-            }
-        }
-        fprintf(stderr, "Error string not found in output\n");
-    }
-    close(pipe_err_fd[PIPE_ERR_READ]);
+    fprintf(stderr, "Error string not found in output\n");
     // error string not found
     return -1;
 }
@@ -215,7 +215,6 @@ char *reduce(char *t)
 {
     char *tm = t;
     int s = strlen(tm) - 1;
-    printf("\ncalled : %d\n", ++c);
     while (s > 0)
     {
         for (int i = 0; i < strlen(tm) - s; i++)
@@ -229,24 +228,24 @@ char *reduce(char *t)
             child_pid = fork();
             if (child_pid == 0)
             { // child process
-                child_process(test);
+                child_process();
             }
             else
             { // parent process
-                if (parent_process() == 0)
+                if (parent_process(test) == 0)
                 {
                     printf("1\n");
                     char *reduced = reduce(test);
-                    // free(test);
-                    // free(head);
-                    // free(tail);
+                    free(test);
+                    free(head);
+                    free(tail);
                     return reduced;
                 }
             }
 
-            // free(test);
-            // free(head);
-            // free(tail);
+            free(test);
+            free(head);
+            free(tail);
         }
 
         for (int i = 0; i < strlen(tm) - s; i++)
@@ -256,20 +255,20 @@ char *reduce(char *t)
             child_pid = fork();
             if (child_pid == 0)
             { // child process
-                child_process(mid);
+                child_process();
             }
             else
             { // parent process
-                if (parent_process() == 0)
+                if (parent_process(mid) == 0)
                 {
                     printf("2\n");
                     char *reduced = reduce(mid);
-                    // free(mid);
+                    free(mid);
                     return reduced;
                 }
             }
 
-            // free(mid);
+            free(mid);
         }
         s--;
     }
@@ -283,11 +282,11 @@ char *minimize(char *t)
 
 int main(int argc, char *argv[])
 {
+    printf("Hello World\n");
     // parse command-line arguments
     int opt;
     while ((opt = getopt(argc, argv, "i:m:o:")) != -1)
     {
-        if(input_file_path != NULL && error_string != NULL && output_file_path != NULL) break;
         switch (opt)
         {
         case 'i':
@@ -300,10 +299,10 @@ int main(int argc, char *argv[])
             output_file_path = optarg;
             break;
         default:
-            
             fprintf(stderr, "Usage: %s -i input_path -m error_string -o output_path\n", argv[0]);
             exit(EXIT_FAILURE);
         }
+        if(input_file_path != NULL && error_string != NULL && output_file_path != NULL) break;
     }
 
     // check if required arguments are provided
@@ -312,15 +311,19 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Usage: %s -i input_path -m error_string -o output_path\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
+    
     program_args = &argv[optind]; // assume all the option arguments are handled.
-
+    
     printf("\n--------------------------------\n");
     printf("input_path: %s\n", input_file_path);
     printf("error_string: %s\n", error_string);
     printf("output_path: %s\n", output_file_path);
     printf("target program path: %s\n", program_args[0]);
+    for(int i=0; program_args[i] != NULL; i++){
+        printf("\n program arg: %s\n", program_args[i]);
+    }
     printf("--------------------------------\n");
+    
     // create pipe
     if (pipe(pipe_fd) == -1 || pipe(pipe_err_fd) == -1)
     {
@@ -328,14 +331,46 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    printf("pipe file descriptors: %d %d\n", pipe_fd[0], pipe_fd[1]);
-    printf("pipe error file descriptors: %d %d\n", pipe_err_fd[0], pipe_err_fd[1]);
-
     read_input_from_file();
-
+ 
     reduced_input = minimize(original_input);
 
     save_in_file(reduced_input, output_file_path);
     printf("Bye!\n");
     return 0;
 }
+
+// int test(){
+//     // Set up the select call to monitor the pipe for readability
+//     fd_set readfds;
+//     FD_ZERO(&readfds);
+//     FD_SET(pipe_err_fd[PIPE_ERR_READ], &readfds);
+
+//     struct timeval timeout_val;
+//     timeout_val.tv_sec = 3;
+//     timeout_val.tv_usec = 0;
+
+//     int result = select(pipe_err_fd[PIPE_ERR_READ] + 1, &readfds, NULL, NULL, &timeout_val);
+//     if (result == -1)
+//     {
+//         perror("Failed to wait for pipe");
+//         exit(EXIT_FAILURE);
+//     }
+//     else if (result == 0)
+//     {
+//         printf("Timeout waiting for data on the pipe. Sending SIGKILL to Excel process...\n");
+//         // Forcefully terminate the Excel process with SIGKILL
+//         if (kill(child_pid, SIGKILL) == 0)
+//         {
+//             printf("Sent SIGKILL to Excel process with PID \n");
+//             return 1;
+//         }
+//         else
+//         {
+//             perror("Failed to send SIGKILL");
+//             exit(EXIT_FAILURE);
+//         }
+//     }
+//     else
+//     {}
+// }
